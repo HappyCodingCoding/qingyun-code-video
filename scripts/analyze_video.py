@@ -30,7 +30,9 @@ def main():
     probe = json.loads(run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", a.video]).stdout)
     v = next(s for s in probe["streams"] if s["codec_type"] == "video")
     has_audio = any(s["codec_type"] == "audio" for s in probe["streams"])
-    dur = float(probe["format"]["duration"])
+    dur = float(probe["format"].get("duration") or v.get("duration") or 0)   # some WebM files only report it per stream
+    if dur <= 0:
+        raise SystemExit(f"could not read the duration of {a.video}")
     num, den = map(int, v["r_frame_rate"].split("/"))
     fps = num / den if den else 0
 
