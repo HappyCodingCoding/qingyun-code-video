@@ -17,7 +17,19 @@
 
 ## 声音层
 
-优先使用用户提供的音源，否则用 Python + numpy 从零合成配乐和音效。配音默认用 edge-tts（`audio_tools.py tts`，会把旁白文字发到微软的在线服务，并输出逐句、逐词时间戳）；用 Kokoro、用户提供的语音模型或配音文件时，要另外拿到逐句、逐词时间戳。
+优先使用用户提供的音源，否则用 Python + numpy 从零合成配乐和音效。配音用 `audio_tools.py tts` 合成，两个引擎都输出逐句、逐词时间戳：
+
+| 引擎 | 参数 | 文字发往 | 需要 |
+|---|---|---|---|
+| 豆包语音（火山引擎，默认） | `--engine volcengine --voice zh_female_vv_uranus_bigtts` | 火山引擎的在线服务 | 豆包语音控制台的 API Key（`VOLC_TTS_API_KEY`），或 App ID 和 Access Key（`VOLC_TTS_APP_ID`、`VOLC_TTS_ACCESS_KEY`）；按量计费 |
+| edge-tts | `--engine edge --voice zh-CN-XiaoxiaoNeural` | 微软的在线服务 | 无需账号 |
+
+豆包语音：
+- 凭据存放在 `~/.qingyun-code/.env`（这个 skill 存放密钥的默认位置，每行一个 `名称=值`，文件权限 600），同名环境变量优先。两种凭据都有时先用 API Key，被拒绝再用 App ID + Access Key。用户在对话里给出密钥时，写进这个文件；不要写进命令行参数或项目文件，回复里也不要复述密钥。火山方舟的 `ark-` 开头的密钥不能用于语音合成。
+- 音色见[音色列表](https://www.volcengine.com/docs/6561/1257544)。2.0 音色用默认的 `--resource seed-tts-2.0`，1.0 音色加 `--resource seed-tts-1.0`，复刻音色用 `seed-icl-2.0` / `seed-icl-1.0`。
+- `--rate` 取 -50% 到 +100%；逐词时间戳只支持中文和英文。
+
+用 Kokoro、用户提供的语音模型或配音文件时，要另外拿到逐句、逐词时间戳。
 
 ## 默认选择
 

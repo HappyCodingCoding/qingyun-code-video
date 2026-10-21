@@ -7,8 +7,15 @@ and draw waveform/spectrum images so the model can check audio it cannot hear.
               (each track optional; music is lowered while the voice speaks)
   normalize:  audio_tools.py normalize audio/mix-raw.wav audio/mix.wav   (-14 LUFS, true peak below -1 dBTP)
   check:      audio_tools.py check audio/mix.wav --out qa/audio
-  tts:        audio_tools.py tts audio/voice-script.txt audio/voice.wav --voice zh-CN-XiaoxiaoNeural --rate=-5%
-              (edge-tts, sends the text to Microsoft's online service; also writes audio/voice.json with
+  tts:        audio_tools.py tts audio/voice-script.txt audio/voice.wav --voice zh_female_vv_uranus_bigtts --rate=-5%
+              audio_tools.py tts audio/voice-script.txt audio/voice.wav --engine edge --voice zh-CN-XiaoxiaoNeural
+              (--engine volcengine, the default: Doubao TTS (豆包语音) over the V3 bidirectional WebSocket, sends the
+               text to Volcengine; credentials VOLC_TTS_API_KEY, or VOLC_TTS_APP_ID + VOLC_TTS_ACCESS_KEY, come from
+               the environment or from ~/.qingyun-code/.env (KEY=value lines; the environment wins); a refused
+               API key falls back to the App ID + Access Key;
+               --resource picks the model, seed-tts-2.0 by default, seed-tts-1.0 for 1.0 voices;
+               --engine edge: edge-tts, no account, sends the text to Microsoft's online service;
+               both also write audio/voice.json with
                {"start", "end", "text", "para", "words": [{"start", "end", "text"}, ...]} for every sentence,
                the timeline the visuals follow;
                a blank line in the script ends a paragraph and inserts --pause seconds of silence, default 0.6;
@@ -26,11 +33,27 @@ timeline.json:
 sounds: click, pop, success, whoosh, impact, tick, kick, riser
 Music itself is better written per project (see references/craft-rules.md); this covers the effects layer.
 """
-import argparse, json, re, subprocess, sys, wave
+import argparse, json, os, re, struct, subprocess, sys, uuid, wave
 
 import numpy as np
 
 SR = 48000
+EDGE_VOICE, VOLC_VOICE = "zh-CN-XiaoxiaoNeural", "zh_female_vv_uranus_bigtts"
+SECRETS = os.path.expanduser("~/.qingyun-code/.env")   # the skill's store for keys; environment variables override it
+
+
+def secret(name):
+    """A credential from the environment, else from SECRETS (KEY=value lines, # comments)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    try:
+        for line in open(SECRETS, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k.strip() == name and not k.startswith("#"):
+                return v.strip().strip("'\"")
+    except FileNotFoundError:
+        pass
+    return None
 
 
 def env(n, attack=0.002, decay=0.1):
@@ -152,46 +175,227 @@ def group_sentences(text, words, para):
     return [{"start": s["start"], "end": s["end"], "text": s["text"], "para": para, "words": s["words"]} for s in out if s["words"]]
 
 
-def cmd_tts(a):
+def decode(data, fmt):
+    """Encoded audio bytes (mp3, or s16le PCM at SR) -> mono float32 at SR."""
+    src = ["-f", "mp3"] if fmt == "mp3" else ["-f", "s16le", "-ar", str(SR), "-ac", "1"]
+    r = subprocess.run(["ffmpeg", "-v", "error", *src, "-i", "-", "-ar", str(SR), "-ac", "1", "-f", "f32le", "-"],
+                       input=bytes(data), capture_output=True)
+    if r.returncode:
+        sys.exit(r.stderr.decode()[:300])
+    return np.frombuffer(r.stdout, dtype=np.float32)
+
+
+def tts_edge(texts, a):
+    """One edge-tts request per paragraph -> [(signal, words with times relative to the paragraph)]."""
     try:
         import edge_tts
     except ImportError:
         sys.exit("edge-tts is not installed: python3 -m pip install edge-tts")
     import asyncio
-    # paragraphs (blocks separated by blank lines) are synthesized one by one and joined with --pause seconds of
-    # silence, so sections get a breath; sentences inside a paragraph keep their natural prosody
-    # a paragraph that is only "[pause N]" is not spoken: it replaces the gap at that point with N seconds of silence
-    paras = [p.strip() for p in re.split(r"\n\s*\n", open(a.script, encoding="utf-8").read()) if p.strip()]
-    hold = lambda p: re.fullmatch(r"\[pause\s+([\d.]+)\]", p)
-    pieces, sentences, t0, k = [], [], 0.0, 0
 
-    async def stream(text, k):
-        # edge-tts reports one boundary type per stream: take words and group them into sentences here
+    async def stream(text):
+        # edge-tts reports one boundary type per stream: take words and group them into sentences later
         mp3, words = bytearray(), []
         async for c in edge_tts.Communicate(text, a.voice, rate=a.rate, boundary="WordBoundary").stream():
             if c["type"] == "audio":
                 mp3.extend(c["data"])
             elif c["type"] == "WordBoundary":       # offset and duration are in 100 ns units
-                start = t0 + c["offset"] / 1e7
-                words.append({"start": round(start, 3), "end": round(start + c["duration"] / 1e7, 3), "text": c["text"]})
-        sentences.extend(group_sentences(text, words, k))
-        return bytes(mp3)
+                start = c["offset"] / 1e7
+                words.append({"start": start, "end": start + c["duration"] / 1e7, "text": c["text"]})
+        return decode(mp3, "mp3"), words
 
+    out = []
+    for text in texts:
+        try:   # fail instead of hanging when the service refuses or stalls; about 1 s per 10 s of speech
+            out.append(asyncio.run(asyncio.wait_for(stream(text), timeout=max(60, len(text) / 2))))
+        except Exception as e:
+            sys.exit(f"edge-tts failed ({type(e).__name__}: {str(e)[:120]}). A 403 usually means the installed edge-tts is "
+                     "too old for Microsoft's service: python3 -m pip install -U edge-tts. Otherwise check the network or proxy.")
+    return out
+
+
+VOLC_URL = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
+# events of the V3 binary protocol; downstream frames for events >= 50 carry a connection or session id
+START_CONN, FINISH_CONN, CONN_STARTED, START_SESSION, FINISH_SESSION = 1, 2, 50, 100, 102
+SESSION_STARTED, SESSION_FINISHED, TASK_REQUEST, TTS_AUDIO = 150, 152, 200, 352
+VOLC_FAILED = {51: "ConnectionFailed", 151: "SessionCanceled", 153: "SessionFailed"}
+
+
+def volc_frame(event, payload, session=None):
+    """Full-client request: v1, 4-byte header, JSON, no compression, with event number (and session id)."""
+    out = bytes([0x11, 0x14, 0x10, 0x00]) + struct.pack(">i", event)
+    if session:
+        out += struct.pack(">I", len(session)) + session.encode()
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    return out + struct.pack(">I", len(body)) + body
+
+
+def volc_parse(msg):
+    """Server frame -> (event, payload): bytes for audio, a dict for JSON. Error frames raise."""
+    mtype, flags, serial, gz = msg[1] >> 4, msg[1] & 0x0F, msg[2] >> 4, msg[2] & 0x0F
+    p = (msg[0] & 0x0F) * 4
+
+    def u32():
+        nonlocal p
+        p += 4
+        return int.from_bytes(msg[p - 4:p], "big")
+    code = u32() if mtype == 0b1111 else None
+    event = None
+    if flags & 0b0011:              # sequence number, not used here
+        u32()
+    if flags & 0b0100:
+        event = struct.unpack(">i", struct.pack(">I", u32()))[0]
+        if event >= 50:             # skip the connection or session id
+            n = u32(); p += n
+    n = u32(); payload = msg[p:p + n]
+    if gz == 0b0001:
+        import gzip
+        payload = gzip.decompress(payload)
+    if serial == 0b0001 or code is not None:
+        payload = json.loads(payload or b"{}")
+    if code is not None:
+        raise RuntimeError(f"error {code}: {payload}")
+    return event, payload
+
+
+def volc_words(obj):
+    """Every word timestamp in a JSON payload, wherever the event nests it."""
+    if isinstance(obj, dict):
+        if isinstance(obj.get("words"), list):
+            yield from obj["words"]
+        else:
+            for v in obj.values():
+                yield from volc_words(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from volc_words(v)
+
+
+def volc_auths():
+    """Volcengine credentials to try, in order: [(name, headers)] for the API key (new console),
+    then the App ID + Access Key (old console); empty when neither is set."""
+    key, app, token = map(secret, ("VOLC_TTS_API_KEY", "VOLC_TTS_APP_ID", "VOLC_TTS_ACCESS_KEY"))
+    return ([("API key", {"X-Api-Key": key})] if key else []) + \
+        ([("App ID + Access Key", {"X-Api-App-Id": app, "X-Api-Access-Key": token})] if app and token else [])
+
+
+VOLC_NO_AUTH = (f"no Volcengine credentials: ask the user for a 豆包语音 API key (VOLC_TTS_API_KEY), or an App ID and "
+                f"Access Key (VOLC_TTS_APP_ID, VOLC_TTS_ACCESS_KEY), and save them to {SECRETS}; or use --engine edge")
+
+
+def volc_connect(http, headers):
+    """Open the WebSocket through an aiohttp ClientSession."""
+    import ssl, urllib.request
+    # go through HTTPS_PROXY like curl does: aiohttp only looks up WSS_PROXY for wss:// URLs
+    proxy = None if urllib.request.proxy_bypass("openspeech.bytedance.com") else urllib.request.getproxies().get("https")
+    # verify TLS against certifi's CA bundle, as edge-tts does: python.org builds ship without system certificates
+    try:
+        import certifi
+        tls = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        tls = ssl.create_default_context()
+    return http.ws_connect(VOLC_URL, headers=headers, proxy=proxy, ssl=tls, max_msg_size=0)
+
+
+def tts_volcengine(texts, a):
+    """One WebSocket connection, one session per paragraph -> [(signal, words with times relative to the paragraph)]."""
+    try:
+        import aiohttp
+    except ImportError:
+        sys.exit("aiohttp is not installed: python3 -m pip install aiohttp")
+    import asyncio
+    auths = volc_auths()
+    if not auths:
+        sys.exit(VOLC_NO_AUTH)
+    rate = int(re.fullmatch(r"([+-]?\d+)%", a.rate)[1]) if re.fullmatch(r"[+-]?\d+%", a.rate) else None
+    if rate is None or not -50 <= rate <= 100:
+        sys.exit("volcengine --rate must lie between -50% (half speed) and +100% (double speed)")
+    # enable_timestamp gives word times on 1.0 voices, enable_subtitle on 2.0 voices; each is ignored by the other
+    params = {"speaker": a.voice, "audio_params": {"format": "pcm", "sample_rate": SR, "speech_rate": rate,
+                                                    "enable_timestamp": True, "enable_subtitle": True}}
+    request = lambda event, **extra: {"user": {"uid": "qingyun-code-video"}, "event": event, "namespace": "BidirectionalTTS",
+                                      "req_params": {**params, **extra}}
+
+    async def run(headers):
+        async with aiohttp.ClientSession() as http, volc_connect(http, headers) as ws:
+            async def expect(*events):
+                m = await ws.receive()
+                if m.type != aiohttp.WSMsgType.BINARY:
+                    raise RuntimeError(f"{m.type.name}: {str(m.data)[:200]}")
+                event, payload = volc_parse(m.data)
+                if event in VOLC_FAILED:
+                    raise RuntimeError(f"{VOLC_FAILED[event]}: {payload}")
+                if events and event not in events:
+                    raise RuntimeError(f"expected event {events}, got {event}")
+                return event, payload
+            await ws.send_bytes(volc_frame(START_CONN, {}))
+            await expect(CONN_STARTED)
+            out = []
+            for text in texts:
+                sid = uuid.uuid4().hex
+                await ws.send_bytes(volc_frame(START_SESSION, request(START_SESSION), sid))
+                await expect(SESSION_STARTED)
+                await ws.send_bytes(volc_frame(TASK_REQUEST, request(TASK_REQUEST, text=text), sid))
+                await ws.send_bytes(volc_frame(FINISH_SESSION, {}, sid))
+                pcm, words = bytearray(), {}
+                while True:
+                    event, payload = await expect()
+                    if event == TTS_AUDIO:
+                        pcm += payload
+                    elif event == SESSION_FINISHED:
+                        break
+                    elif isinstance(payload, dict):
+                        for w in volc_words(payload):
+                            # words may carry punctuation ("日，"); strip it so they match the script like edge-tts words
+                            t = re.sub(r"^[\W_]+|[\W_]+$", "", w.get("word", ""))
+                            if t:     # a word can arrive twice (sentence end and subtitle events): key on its start
+                                words[(w["startTime"], t)] = {"start": w["startTime"], "end": w["endTime"], "text": t}
+                sig, words = decode(pcm, "pcm"), sorted(words.values(), key=lambda w: w["start"])
+                # 2.0 subtitles squeeze spoken-out numbers ("2019") to their last few ms: start such a word where the
+                # previous word ends, or where speech begins in this paragraph
+                loud = np.flatnonzero(np.abs(sig) > 0.02)
+                prev_end = loud[0] / SR if len(loud) else 0.0
+                for w in words:
+                    if w["end"] - w["start"] < 0.06 and w["end"] > prev_end:
+                        w["start"] = prev_end
+                    prev_end = w["end"]
+                out.append((sig, words))
+            await ws.send_bytes(volc_frame(FINISH_CONN, {}))
+            return out
+    for i, (name, cred) in enumerate(auths):   # a refused API key falls back to the App ID + Access Key
+        headers = cred | {"X-Api-Resource-Id": a.resource, "X-Api-Connect-Id": str(uuid.uuid4())}
+        try:
+            return asyncio.run(asyncio.wait_for(run(headers), timeout=max(60, sum(map(len, texts)) / 2)))
+        except aiohttp.WSServerHandshakeError as e:
+            if e.status in (401, 403) and i < len(auths) - 1:
+                print(f"Volcengine refused the {name} (HTTP {e.status}); trying the {auths[i + 1][0]}", file=sys.stderr)
+                continue
+            ark = " An ark- key is a 火山方舟 (Ark) key; the speech service needs a key from the 豆包语音 console." \
+                if cred.get("X-Api-Key", "").startswith("ark-") else ""
+            sys.exit(f"Volcengine refused the {name} (HTTP {e.status}): check the credentials, and that --resource "
+                     f"{a.resource} is enabled for the account.{ark}")
+        except Exception as e:
+            hint = " A 1.0 voice needs --resource seed-tts-1.0." if a.resource == "seed-tts-2.0" else ""
+            sys.exit(f"Volcengine TTS failed ({type(e).__name__}: {str(e)[:300]}).{hint}")
+
+
+def cmd_tts(a):
+    # paragraphs (blocks separated by blank lines) are synthesized one by one and joined with --pause seconds of
+    # silence, so sections get a breath; sentences inside a paragraph keep their natural prosody
+    # a paragraph that is only "[pause N]" is not spoken: it replaces the gap at that point with N seconds of silence
+    paras = [p.strip() for p in re.split(r"\n\s*\n", open(a.script, encoding="utf-8").read()) if p.strip()]
+    hold = lambda p: re.fullmatch(r"\[pause\s+([\d.]+)\]", p)
+    a.voice = a.voice or (VOLC_VOICE if a.engine == "volcengine" else EDGE_VOICE)
+    spoken = iter((tts_volcengine if a.engine == "volcengine" else tts_edge)([p for p in paras if not hold(p)], a))
+    pieces, sentences, t0, k = [], [], 0.0, 0
     for i, text in enumerate(paras):
         if hold(text):
             pieces.append(np.zeros(int(float(hold(text)[1]) * SR)))
             t0 += len(pieces[-1]) / SR
             continue
-        try:   # fail instead of hanging when the service refuses or stalls; about 1 s per 10 s of speech
-            mp3 = asyncio.run(asyncio.wait_for(stream(text, k), timeout=max(60, len(text) / 2)))
-        except Exception as e:
-            sys.exit(f"edge-tts failed ({type(e).__name__}: {str(e)[:120]}). A 403 usually means the installed edge-tts is "
-                     "too old for Microsoft's service: python3 -m pip install -U edge-tts. Otherwise check the network or proxy.")
-        r = subprocess.run(["ffmpeg", "-v", "error", "-f", "mp3", "-i", "-", "-ar", str(SR), "-ac", "1", "-f", "f32le", "-"],
-                           input=mp3, capture_output=True)
-        if r.returncode:
-            sys.exit(r.stderr.decode()[:300])
-        sig = np.frombuffer(r.stdout, dtype=np.float32)
+        sig, words = next(spoken)
+        words = [{**w, "start": round(t0 + w["start"], 3), "end": round(t0 + w["end"], 3)} for w in words]
+        sentences.extend(group_sentences(text, words, k))
         last, before_hold = i == len(paras) - 1, i < len(paras) - 1 and hold(paras[i + 1])
         gap = np.zeros(0 if last or before_hold else int(a.pause * SR))
         pieces += [sig, gap]
@@ -308,11 +512,17 @@ p.add_argument("--music-gain", type=float, default=-6, help="dB applied to the m
 p.add_argument("--duck-ratio", type=float, default=6, help="how hard the voice pushes the music down")
 p.set_defaults(fn=cmd_mix)
 p = sp.add_parser("tts"); p.add_argument("script"); p.add_argument("out")
-p.add_argument("--voice", default="zh-CN-XiaoxiaoNeural", help="edge-tts voice; list them with: edge-tts --list-voices")
-p.add_argument("--rate", default="+0%", help="speaking rate, written with =, e.g. --rate=+10%% or --rate=-5%% (a bare -5%% is read as a flag)")
+p.add_argument("--engine", choices=("volcengine", "edge"), default="volcengine", help="Doubao TTS on Volcengine (default) or edge-tts")
+p.add_argument("--voice", help=f"volcengine: speaker id, default {VOLC_VOICE}, list at https://www.volcengine.com/docs/6561/1257544; "
+               f"edge: default {EDGE_VOICE}, list with edge-tts --list-voices")
+p.add_argument("--resource", default="seed-tts-2.0", help="volcengine X-Api-Resource-Id: seed-tts-2.0 for 2.0 voices, "
+               "seed-tts-1.0 for 1.0 voices, seed-icl-2.0 / seed-icl-1.0 for cloned voices")
+p.add_argument("--rate", default="+0%", help="speaking rate, written with =, e.g. --rate=+10%% or --rate=-5%% (a bare -5%% is read as a flag); "
+               "volcengine accepts -50%% to +100%%")
 p.add_argument("--pause", type=float, default=0.6, help="seconds of silence at each blank line in the script")
 p.set_defaults(fn=cmd_tts)
 p = sp.add_parser("normalize"); p.add_argument("inp"); p.add_argument("out"); p.set_defaults(fn=cmd_normalize)
 p = sp.add_parser("check"); p.add_argument("inp"); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_check)
 p = sp.add_parser("beats"); p.add_argument("inp"); p.set_defaults(fn=cmd_beats)
-args = ap.parse_args(); args.fn(args)
+if __name__ == "__main__":   # check_env.py imports the Volcengine helpers
+    args = ap.parse_args(); args.fn(args)

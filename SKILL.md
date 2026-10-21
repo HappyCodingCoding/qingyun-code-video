@@ -32,7 +32,7 @@ code-videos/<slug>/
 
 ## 第 0 步：检查环境
 
-运行一次 `python3 scripts/check_env.py`，检查网页出片和声音合成所需的依赖项：python3、FFmpeg、numpy、edge-tts、Playwright、浏览器及其 WebGL 支持。若缺少依赖项，告知用户缺少哪些，并询问用户是否安装它们。
+运行一次 `python3 scripts/check_env.py`，检查网页出片和声音合成所需的依赖项：python3、FFmpeg、numpy、豆包语音的凭据、edge-tts、Playwright、浏览器及其 WebGL 支持。若缺少依赖项，告知用户缺少哪些，并询问用户是否安装它们。豆包语音的凭据缺失或无效时，请用户提供豆包语音控制台的 API Key，或 App ID 和 Access Key，两者任选其一（存放方式见 code-stack.md 的「声音层」）；用户不提供时改用 edge-tts。
 
 若后面的视频制作方案采用了 Remotion、HyperFrames、Manim 中的任意一种或多种，在第 4 步做预览之前，运行 `python3 scripts/check_env.py --only <框架名>`（可写多个，如 `--only remotion manim`）检查这些框架所需的依赖项，各框架需要什么见 [references/code-stack.md](references/code-stack.md) 的「两种出片方式」中的「需要」一项。若缺少依赖项，同样告知用户缺少哪些，并询问用户是否安装它们。
 
@@ -61,7 +61,7 @@ code-videos/<slug>/
 | 配色 | 主色 …，辅色1 …, 辅色2 … | 无，按内容和品牌定 |
 | 内容字体 | 字体名称 | 系统中文字体（见 craft-rules.md 的「字体」） |
 | 配乐 | 代码合成 / 用户提供的音频文件 | 代码合成 |
-| 配音 | 要或不要；音色、语速 | 要 |
+| 配音 | 要或不要；引擎（豆包语音 / edge-tts）、音色、语速 | 要，豆包语音 |
 | 字幕 | 显示或不显示；颜色、字体、字号 | 有配音时显示 |
 
 然后分两轮询问用户：
@@ -69,7 +69,7 @@ code-videos/<slug>/
 1. 列出这套推荐参数，询问用户直接采用还是逐项调整。
 2. 若用户选择直接采用，进入第 3 步。若用户选择逐项调整，为每个用户没有明确过的参数提一个问题：推荐值作为第一个选项并标明「推荐」，再给 2–3 个其他选项；问完进入第 3 步。
 
-若最终参数里要配音，告诉用户：配音默认用 edge-tts，旁白文字会发到微软的在线服务；文稿需要保密时，改用 Kokoro 等本地语音模型或用户提供的配音文件（见 code-stack.md 的「声音层」）。
+若最终参数里要配音，告诉用户：配音默认用豆包语音，旁白文字会发到火山引擎的在线服务，按量计费；也可以改用 edge-tts（无需账号，文字发到微软的在线服务）；文稿需要保密时，改用 Kokoro 等本地语音模型或用户提供的配音文件（见 code-stack.md 的「声音层」）。
 
 把最终参数写进 `source/notes.md`，第 5 步写 production-spec.md 时按它填写 `<overview>`。
 
@@ -112,7 +112,7 @@ code-videos/<slug>/
 
 1. **每一帧只由它在视频时间轴上的时间点算出**。网页里 `window.render(t)` 画出第 t 秒，Remotion、HyperFrames 里画面由当前帧号或时间轴位置算出；不用 `requestAnimationFrame`、`setTimeout`、CSS transition，随机数带固定种子，帧和帧之间不保存状态。这样任何一帧都能单独重渲，改一个镜头不会影响别的镜头。
 2. **逐个镜头制作**。每做完一个镜头，渲染它开头、中间、结尾 3 张静帧（网页一条命令渲完：`python3 scripts/render.py index.html qa/shot<n>.png --still <开头>,<中间>,<结尾> --size <宽>x<高>`）并检查：文字有没有溢出、元素有没有重叠、主体够不够大；再对照代码里的进出场时间，确认每段文字至少停留 2.5 秒。修好再做下一个镜头。网页的尺寸和位置要按窗口宽高算（见 craft-rules.md 的「多画幅」），第 7 步按一半分辨率渲低清版时画面才不会错位。
-3. **声音和画面用同一张时间轴**。有配音时，先把 production-spec.md 各镜头的「旁白」按顺序连成全文，写进 `audio/voice-script.txt`，段落之间空一行（合成时每个空行插入 `--pause` 秒停顿，默认 0.6 秒，让观众在段落之间喘口气；某处要更长的停顿时，比如出题后留给观众思考，在那里单独写一段 `[pause <秒数>]`，合成时换成这么长的静音），运行 `python3 scripts/audio_tools.py tts audio/voice-script.txt audio/voice.wav --voice <音色> --rate=<语速>` 合成配音（语速如 `-8%`，要用等号连写，否则负值会被当成参数），以它写出的 `audio/voice.json` 作为时间轴：每一句有开始、结束时间，句内每个词也有（`words`）；镜头切换对齐句子，句中的动作（比如读到某个数字时让数字落位）对齐对应的词（改用其他语音模型或用户提供的配音时，同样要拿到逐句和逐词时间戳，写成同样格式的 `audio/voice.json`）；没有配音时用节拍网格（用户提供的音乐用 `source/beats.json`，代码合成的配乐按 BPM 算）。镜头切换和关键动作落在时间轴上，音效放在画面动作发生的那一帧。
+3. **声音和画面用同一张时间轴**。有配音时，先把 production-spec.md 各镜头的「旁白」按顺序连成全文，写进 `audio/voice-script.txt`，段落之间空一行（合成时每个空行插入 `--pause` 秒停顿，默认 0.6 秒，让观众在段落之间喘口气；某处要更长的停顿时，比如出题后留给观众思考，在那里单独写一段 `[pause <秒数>]`，合成时换成这么长的静音），运行 `python3 scripts/audio_tools.py tts audio/voice-script.txt audio/voice.wav --voice <音色> --rate=<语速>` 合成配音（语速如 `-8%`，要用等号连写，否则负值会被当成参数；默认用豆包语音，改用 edge-tts 时加 `--engine edge`，两者的音色和参数见 code-stack.md 的「声音层」），以它写出的 `audio/voice.json` 作为时间轴：每一句有开始、结束时间，句内每个词也有（`words`）；镜头切换对齐句子，句中的动作（比如读到某个数字时让数字落位）对齐对应的词（改用其他语音模型或用户提供的配音时，同样要拿到逐句和逐词时间戳，写成同样格式的 `audio/voice.json`）；没有配音时用节拍网格（用户提供的音乐用 `source/beats.json`，代码合成的配乐按 BPM 算）。镜头切换和关键动作落在时间轴上，音效放在画面动作发生的那一帧。
 4. **镜头要动**。用推、拉、跟随，让主体至少占画面三分之一。
 
 ## 第 7 步：渲染和验收

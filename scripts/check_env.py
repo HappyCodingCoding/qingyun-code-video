@@ -16,17 +16,49 @@ def report(name, good, fix=""):
     print(f"[{'ok' if good else 'missing'}] {name}" + ("" if good else f"  ->  {fix}"))
 
 
+def check_doubao():
+    """Default voiceover engine: credentials present and accepted (a WebSocket handshake, nothing synthesized)."""
+    has_http = importlib.util.find_spec("aiohttp") is not None
+    report("aiohttp (Doubao TTS)", has_http, "python3 -m pip install aiohttp")
+    if not has_http or importlib.util.find_spec("numpy") is None:
+        return
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+    from audio_tools import VOLC_NO_AUTH, volc_auths, volc_connect   # same credentials and connection the tts command uses
+    auths = volc_auths()
+    report("Doubao TTS credentials", bool(auths), VOLC_NO_AUTH)
+    if not auths:
+        return
+    import aiohttp, asyncio
+
+    async def handshake(headers):
+        async with aiohttp.ClientSession() as http, volc_connect(http, {**headers, "X-Api-Resource-Id": "seed-tts-2.0"}):
+            pass
+    accepted, problems = None, []
+    for name, headers in auths:   # the same order the tts command tries them in
+        try:
+            asyncio.run(asyncio.wait_for(handshake(headers), timeout=20)); accepted = name; break
+        except aiohttp.WSServerHandshakeError as e:
+            ark = ", an ark- key is a 火山方舟 key" if headers.get("X-Api-Key", "").startswith("ark-") else ""
+            problems.append(f"{name}: HTTP {e.status}, invalid or seed-tts-2.0 not enabled{ark}")
+        except Exception as e:
+            problems.append(f"{name}: {type(e).__name__}, check the network or proxy")
+    for p in problems if accepted else []:
+        print(f"[info] Doubao TTS refused the {p}")
+    report(f"Doubao TTS accepts the {accepted or 'credentials'}", bool(accepted), "; ".join(problems))
+
+
 def check_base():
     report("python3 >= 3.9", sys.version_info >= (3, 9), "install Python 3.9+")
     has_ff = bool(shutil.which("ffmpeg"))
     report("ffmpeg", has_ff, "macOS: brew install ffmpeg | Windows: winget install ffmpeg | Linux: apt install ffmpeg")
     report("ffprobe", bool(shutil.which("ffprobe")), "comes with ffmpeg")
     report("numpy (audio synthesis)", importlib.util.find_spec("numpy") is not None, "python3 -m pip install numpy")
+    check_doubao()
     tts_ok = False
     if importlib.util.find_spec("edge_tts") is not None:   # audio_tools.py tts needs the boundary option (edge-tts 7+)
         import edge_tts, inspect
         tts_ok = "boundary" in inspect.signature(edge_tts.Communicate).parameters
-    report("edge-tts 7+ (voiceover)", tts_ok, "python3 -m pip install -U edge-tts")
+    report("edge-tts 7+ (voiceover fallback)", tts_ok, "python3 -m pip install -U edge-tts")
     if tts_ok:   # Microsoft refuses outdated clients with HTTP 403, so a version check alone is not enough
         import asyncio
 

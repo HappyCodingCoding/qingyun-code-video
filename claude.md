@@ -4,7 +4,7 @@ When working with this codebase, prioritize readability over cleverness. Ask cla
 
 ## About This Project
 
-The project is a skill used to make videos with technoloies like Canvas 2D, HTML / CSS / SVG, WebGL 着色器, Three.js, p5.js + p5.brush, GSAP, Remotion(React), Manim(Python) etc.
+The project is a skill used to make videos with technologies like Canvas 2D, HTML / CSS / SVG, WebGL 着色器, Three.js, p5.js + p5.brush, GSAP, Remotion(React), Manim(Python) etc.
 
 ## Core Principle
 
