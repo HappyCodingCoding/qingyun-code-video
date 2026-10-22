@@ -41,7 +41,7 @@
 ## 两种出片方式
 
 网页由 `scripts/render.py` 逐帧截图；框架用自己的渲染器出无声画面，最后统一用 FFmpeg 混入声音：
-`ffmpeg -i <画面.mp4> -i audio/mix.wav -map 0:v -map 1:a -c:v copy -c:a aac -shortest out/final.mp4`
+`ffmpeg -i <画面.mp4> -i audio/mix.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -shortest out/final.mp4`
 
 下面 `<Comp>` 是 Remotion 的 Composition ID，`<Scene>` 是 Manim 的场景类名。
 

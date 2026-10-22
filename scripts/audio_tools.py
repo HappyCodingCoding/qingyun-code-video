@@ -20,6 +20,15 @@ and draw waveform/spectrum images so the model can check audio it cannot hear.
                the timeline the visuals follow;
                a blank line in the script ends a paragraph and inserts --pause seconds of silence, default 0.6;
                a paragraph that is only "[pause 5]" inserts 5 s of silence there instead)
+  subs:       audio_tools.py subs audio/voice.json audio/subtitles.json [--cues audio/cues.json] [--max-width 44]
+              (cuts every utterance into one-line subtitle cues of at most one sentence, each timed by its own words;
+               an utterance is a run of consecutive sentences sharing "group" (else "para"); utterances without
+               hand-made cues are cut at sentence ends, then at clause marks, then between words, so no cue is
+               wider than --max-width, a CJK character counting 2; cues.json {"<uid or para>": [{"text", "second"}]}
+               gives an utterance's cues by hand, keyed by its sentences' "uid" (else "para"): their texts, joined,
+               must spell the utterance, and "second" is an optional second line such as a translation;
+               writes [{"start", "end", "text", "second"?, ...the sentence's other fields except words}];
+               show a cue from its start until the next cue starts, or until its end + 0.5 s)
   beats:      audio_tools.py beats music.mp3 > source/beats.json     (measure a supplied track)
 
 beats.json: {"bpm": 120.0, "beats": [...], "downbeats": [...], "hits": [...]}
@@ -408,6 +417,89 @@ def cmd_tts(a):
     print(f"{a.out}: {k} paragraphs, {len(sentences)} sentences, speech ends at {end:.2f}s; timestamps in {timeline}")
 
 
+def width(s):
+    """Display width of a subtitle: a CJK character or full-width mark counts 2, anything else 1."""
+    return sum(2 if ord(c) >= 0x2E80 else 1 for c in s)
+
+
+def auto_cues(text, max_width):
+    """Cut text into cues: sentences first, then clauses, then between words, each at most max_width wide."""
+    sentences = [s.strip() for s in re.findall(r".+?(?:[。！？!?]+[\"”’)）]*|\.(?=\s)|$)", text) if s.strip()]
+    cues = []
+    for s in sentences:
+        cur = ""
+        for p in re.split(r"(?<=[,;:，；：、—…])", s):     # greedy: add clauses while the line still fits
+            if cur.strip() and width((cur + p).strip()) > max_width:
+                cues.append(cur.strip()); cur = p
+            else:
+                cur += p
+        cues.append(cur.strip())
+    out = []
+    for c in filter(None, cues):                           # a clause still too wide: split into equal parts
+        n = -(-width(c) // max_width)
+        if n <= 1:
+            out.append(c); continue
+        sep = "" if width(c) > 1.5 * len(c) else " "
+        units = list(c) if sep == "" else c.split(" ")
+        per, parts, part, w = width(c) / n, [], [], 0
+        for u in units:
+            part.append(u); w += width(u) + len(sep)
+            if w >= per and len(parts) < n - 1:
+                parts.append(sep.join(part)); part, w = [], 0
+        parts.append(sep.join(part))
+        out += [p.strip() for p in parts if p.strip()]
+    return out
+
+
+def cmd_subs(a):
+    sentences = json.load(open(a.voice, encoding="utf-8"))
+    hand = json.load(open(a.cues, encoding="utf-8")) if a.cues else {}
+    norm = lambda s: "".join(c for c in s.lower() if c.isalnum())
+    utterances = []
+    for s in sentences:                                    # consecutive sentences of one group form an utterance
+        g = s["group"] if "group" in s else s.get("para", id(s))
+        if utterances and utterances[-1][0] == g:
+            utterances[-1][1].append(s)
+        else:
+            utterances.append((g, [s]))
+    subs = []
+    for g, ss in utterances:
+        text = " ".join(s["text"] for s in ss)
+        words = [w for s in ss for w in s["words"]]
+        key = str(ss[0].get("uid", ss[0].get("para")))
+        cues = hand.get(key) or [{"text": c} for c in auto_cues(text, a.max_width)]
+        flat, spans, pos = norm(text), [], 0
+        if norm("".join(c["text"] for c in cues)) != flat:
+            sys.exit(f"subs: the cues for {key!r} do not spell its speech:\n  speech: {text}\n  cues:   "
+                     + " | ".join(c["text"] for c in cues))
+        for c in cues:
+            spans.append((pos, pos + len(norm(c["text"])))); pos = spans[-1][1]
+        placed, pos = [], 0                                # each word's place in the normalized speech
+        for w in words:
+            at = flat.find(norm(w["text"]), pos)
+            if at >= 0 and norm(w["text"]):
+                placed.append((at, w)); pos = at + len(norm(w["text"]))
+        meta = {k: v for k, v in ss[0].items() if k not in ("start", "end", "text", "words", "para")}
+        rows = []
+        for c, (i, j) in zip(cues, spans):
+            ws = [w for at, w in placed if i <= at < j]
+            row = {"start": ws[0]["start"] if ws else None, "end": ws[-1]["end"] if ws else None, "text": c["text"]}
+            if c.get("second"):
+                row["second"] = c["second"]
+            rows.append({**row, **meta})
+        for k, r in enumerate(rows):                       # a cue with no timed word sits between its neighbours
+            if r["start"] is None:
+                r["start"] = rows[k - 1]["end"] if k else ss[0]["start"]
+                nxt = next((x["start"] for x in rows[k + 1:] if x["start"] is not None), ss[-1]["end"])
+                r["end"] = max(r["start"], nxt)
+        subs += rows
+    subs.sort(key=lambda r: r["start"])
+    json.dump(subs, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    wide = [r["text"] for r in subs if width(r["text"]) > a.max_width]
+    print(f"{a.out}: {len(subs)} cues from {len(utterances)} utterances"
+          + (f"; wider than {a.max_width}: {wide}" if wide else ""))
+
+
 def loudness(path):
     st = subprocess.run(["ffmpeg", "-hide_banner", "-i", path, "-af", "ebur128=peak=true", "-f", "null", "-"], capture_output=True, text=True).stderr
     summary = st[st.rfind("Summary:"):]
@@ -523,6 +615,10 @@ p.add_argument("--pause", type=float, default=0.6, help="seconds of silence at e
 p.set_defaults(fn=cmd_tts)
 p = sp.add_parser("normalize"); p.add_argument("inp"); p.add_argument("out"); p.set_defaults(fn=cmd_normalize)
 p = sp.add_parser("check"); p.add_argument("inp"); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_check)
+p = sp.add_parser("subs"); p.add_argument("voice"); p.add_argument("out")
+p.add_argument("--cues", help="JSON of hand-made cues per utterance: {\"<uid or para>\": [{\"text\", \"second\"}]}")
+p.add_argument("--max-width", type=int, default=44, help="widest automatic cue; a CJK character counts 2")
+p.set_defaults(fn=cmd_subs)
 p = sp.add_parser("beats"); p.add_argument("inp"); p.set_defaults(fn=cmd_beats)
 if __name__ == "__main__":   # check_env.py imports the Volcengine helpers
     args = ap.parse_args(); args.fn(args)

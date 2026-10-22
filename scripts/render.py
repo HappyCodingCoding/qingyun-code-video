@@ -156,7 +156,7 @@ def main():
         cmd += ["-vf", f"{blur}setpts=N/({a.fps}*TB),format=yuv420p", "-r", str(a.fps), "-c:v", "libx264", "-crf", str(a.crf),
                 "-g", str(a.fps), "-keyint_min", str(a.fps), "-sc_threshold", "0"]   # a keyframe every second: splice.py cuts there
         if a.audio:   # pad the audio with silence so -shortest always stops at the end of the video
-            cmd += ["-af", "apad", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+            cmd += ["-af", "apad", "-c:a", "aac", "-b:a", "320k", "-shortest"]
         cmd.append(a.out)
         ff = subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
@@ -207,7 +207,7 @@ def render_parallel(a):
     (tmp / "list.txt").write_text("".join(f"file '{s.name}'\n" for s in segs))
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(tmp / "list.txt")]
     if a.audio:
-        cmd += ["-ss", str(a.start), "-i", a.audio, "-map", "0:v", "-map", "1:a", "-af", "apad", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+        cmd += ["-ss", str(a.start), "-i", a.audio, "-map", "0:v", "-map", "1:a", "-af", "apad", "-c:a", "aac", "-b:a", "320k", "-shortest"]
     if subprocess.run(cmd + ["-c:v", "copy", a.out]).returncode:
         sys.exit(f"joining the segments failed; they are in {tmp}")
     for f in tmp.iterdir():
