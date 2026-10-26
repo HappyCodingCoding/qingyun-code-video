@@ -23,7 +23,7 @@ Audio shorter than the video is padded with silence; the video length always fol
 """
 import argparse, functools, http.server, json, os, pathlib, subprocess, sys, tempfile, threading, time, urllib.parse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
 GPU_ARGS = ["--enable-gpu", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader"]
 if sys.platform == "darwin":
@@ -165,10 +165,20 @@ def main():
         shot = {"type": "jpeg", "quality": 100} if a.frames == "jpeg" else {"type": "png"}
         t0 = time.time()
         total = frames * sub
+        def capture(t):
+            # a busy GPU (several browsers at once, long WebGL renders) now and then stalls one screenshot past
+            # Playwright's 30 s timeout: draw the frame again and retry before giving up
+            for attempt in range(3):
+                try:
+                    pg.evaluate("t => window.render(t)", t)
+                    return pg.screenshot(**shot)
+                except PlaywrightTimeout:
+                    if attempt == 2:
+                        raise
+                    print(f"  screenshot at t={t:.3f}s timed out; retrying", file=sys.stderr, flush=True)
         try:
             for i in range(total):
-                pg.evaluate("t => window.render(t)", a.start + i / (a.fps * sub))
-                ff.stdin.write(pg.screenshot(**shot))
+                ff.stdin.write(capture(a.start + i / (a.fps * sub)))
                 if i and i % max(1, total // 10) == 0:
                     print(f"  {i}/{total} samples, {time.time() - t0:.0f}s", flush=True)
         except BaseException:
@@ -194,16 +204,22 @@ def render_parallel(a):
     if cuts[0] != 0: cuts.insert(0, 0)
     n = len(cuts) - 1
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="render-", dir=pathlib.Path(a.out).resolve().parent))
-    segs, procs, t0 = [], [], time.time()
-    for k in range(n):
-        seg = tmp / f"seg{k:02d}.mp4"; segs.append(seg)
-        cmd = [sys.executable, os.path.abspath(__file__), a.page, str(seg), "--size", a.size, "--fps", str(a.fps),
+    segs, t0 = [tmp / f"seg{k:02d}.mp4" for k in range(n)], time.time()
+    def start(k):
+        cmd = [sys.executable, os.path.abspath(__file__), a.page, str(segs[k]), "--size", a.size, "--fps", str(a.fps),
                "--start", repr(a.start + cuts[k] / a.fps), "--duration", repr((cuts[k + 1] - cuts[k]) / a.fps),
                "--subframes", str(a.subframes), "--crf", str(a.crf), "--frames", a.frames]
-        procs.append(subprocess.Popen(cmd, stdout=subprocess.DEVNULL))
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL)
     print(f"rendering {frames} frames in {n} parallel segments ...", flush=True)
-    if any(p.wait() for p in procs):
-        sys.exit(f"a segment failed; partial output kept in {tmp}")
+    procs = {k: start(k) for k in range(n)}
+    failed = [k for k, p in procs.items() if p.wait()]
+    for _ in range(2):                         # render only the failed segments again, one at a time
+        if not failed:
+            break
+        print(f"segments {failed} failed; rendering them again", file=sys.stderr, flush=True)
+        failed = [k for k in failed if start(k).wait()]
+    if failed:
+        sys.exit(f"segments {failed} failed; partial output kept in {tmp}")
     (tmp / "list.txt").write_text("".join(f"file '{s.name}'\n" for s in segs))
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(tmp / "list.txt")]
     if a.audio:

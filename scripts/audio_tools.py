@@ -164,7 +164,8 @@ def cmd_mix(a):
 
 
 def group_sentences(text, words, para):
-    """Split a paragraph at 。！？!? and line breaks; give each sentence the words found inside it, in order."""
+    """Split a paragraph at 。！？!? and line breaks; give each sentence the words found inside it, in order.
+    Returns the sentences that got words, and the texts of those that got none."""
     spans = [(m.start(), m.end()) for m in re.finditer(r"[^。！？!?\n]+[。！？!?]*", text) if m.group().strip()]
     out, pos = [{"text": text[i:j].strip(), "para": para, "words": []} for i, j in spans], 0
     for w in words:
@@ -179,9 +180,12 @@ def group_sentences(text, words, para):
         if s["words"]:
             s["start"], s["end"] = s["words"][0]["start"], s["words"][-1]["end"]
     missing = [s["text"] for s in out if not s["words"]]
-    if missing:
-        print(f"warning: no word timing for {missing}; they are left out of voice.json", file=sys.stderr)
-    return [{"start": s["start"], "end": s["end"], "text": s["text"], "para": para, "words": s["words"]} for s in out if s["words"]]
+    return [{"start": s["start"], "end": s["end"], "text": s["text"], "para": para, "words": s["words"]} for s in out if s["words"]], missing
+
+
+def untimed(text, words):
+    """The sentences of a paragraph that no word timing falls in."""
+    return group_sentences(text, words, 0)[1]
 
 
 def decode(data, fmt):
@@ -340,7 +344,7 @@ def tts_volcengine(texts, a):
             await ws.send_bytes(volc_frame(START_CONN, {}))
             await expect(CONN_STARTED)
             out = []
-            for text in texts:
+            async def session(text):
                 sid = uuid.uuid4().hex
                 await ws.send_bytes(volc_frame(START_SESSION, request(START_SESSION), sid))
                 await expect(SESSION_STARTED)
@@ -368,6 +372,14 @@ def tts_volcengine(texts, a):
                     if w["end"] - w["start"] < 0.06 and w["end"] > prev_end:
                         w["start"] = prev_end
                     prev_end = w["end"]
+                return sig, words
+            for text in texts:
+                # the service now and then drops a paragraph's last subtitle event, leaving a sentence without
+                # word times: synthesize the paragraph again
+                for _ in range(4):
+                    sig, words = await session(text)
+                    if not untimed(text, words):
+                        break
                 out.append((sig, words))
             await ws.send_bytes(volc_frame(FINISH_CONN, {}))
             return out
@@ -404,7 +416,10 @@ def cmd_tts(a):
             continue
         sig, words = next(spoken)
         words = [{**w, "start": round(t0 + w["start"], 3), "end": round(t0 + w["end"], 3)} for w in words]
-        sentences.extend(group_sentences(text, words, k))
+        timed, missing = group_sentences(text, words, k)
+        if missing:
+            print(f"warning: no word timing for {missing}; they are left out of voice.json", file=sys.stderr)
+        sentences.extend(timed)
         last, before_hold = i == len(paras) - 1, i < len(paras) - 1 and hold(paras[i + 1])
         gap = np.zeros(0 if last or before_hold else int(a.pause * SR))
         pieces += [sig, gap]
