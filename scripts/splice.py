@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Replace time ranges of a finished video with re-rendered segments, keeping the video's own audio.
 
-  splice.py out/final.mp4 qa/seg-98.mp4@98 qa/seg-141.mp4@141
+  splice.py out/final-v1.mp4 qa/seg-98.mp4@98 qa/seg-141.mp4@141
     replaces, for each SEGMENT@SECONDS, the frames from SECONDS for the segment's length with the segment's frames.
 
 Make each segment with the same size and fps as the video, e.g. for a web page:

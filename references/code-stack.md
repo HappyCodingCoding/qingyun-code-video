@@ -41,7 +41,7 @@
 ## 两种出片方式
 
 网页由 `scripts/render.py` 逐帧截图；框架用自己的渲染器出无声画面，最后统一用 FFmpeg 混入声音：
-`ffmpeg -i <画面.mp4> -i audio/mix.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -shortest out/final.mp4`
+`ffmpeg -i <画面.mp4> -i audio/mix.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -shortest out/final-v<n>.mp4`
 
 下面 `<Comp>` 是 Remotion 的 Composition ID，`<Scene>` 是 Manim 的场景类名。
 
@@ -53,8 +53,8 @@
 - 本地文件：render.py 通过本地 HTTP 服务打开页面（根目录是运行命令的 `code-videos/<slug>/`），页面可以用 `fetch()` 读 `audio/voice.json` 等项目文件、`import` 本地 ES 模块；直接双击打开的 `file://` 页面做不到这两件事。
 - 视频素材：用户的视频放进网页时，在 render(t) 里把 `video.currentTime` 设到对应时间，并返回一个等 `seeked` 事件的 Promise（时间没变时直接返回）；render.py 会等这个 Promise 完成再截图。
 - 静帧：`python3 scripts/render.py index.html shot.png --still 2.0 --size 1920x1080`；多个时间点用逗号隔开（`--still 1,6,10`），在同一个浏览器里渲完，存成 `shot-t1.png`、`shot-t6.png`、`shot-t10.png`
-- 片段：`python3 scripts/render.py index.html seg.mp4 --size 1920x1080 --fps 30 --start 8 --duration 3`；换进成片：`python3 scripts/splice.py out/final.mp4 seg.mp4@8`，多个片段一次写完；起点和时长取整秒时不重新编码（Remotion 片段同样可以换进去，起点 = 起始帧号 ÷ fps；它的成片没有逐秒关键帧，换片段时会重新编码一次）
-- 整片：`python3 scripts/render.py index.html out/final.mp4 --size 1920x1080 --fps 30 --duration 30 --audio audio/mix.wav`（直接带上声音）；长片加 `--workers 4`，4 个浏览器并行渲染分段再拼接
+- 片段：`python3 scripts/render.py index.html seg.mp4 --size 1920x1080 --fps 30 --start 8 --duration 3`；换进成片：`python3 scripts/splice.py out/final-v1.mp4 seg.mp4@8`，多个片段一次写完；起点和时长取整秒时不重新编码（Remotion 片段同样可以换进去，起点 = 起始帧号 ÷ fps；它的成片没有逐秒关键帧，换片段时会重新编码一次）
+- 整片：`python3 scripts/render.py index.html out/final-v1.mp4 --size 1920x1080 --fps 30 --duration 30 --audio audio/mix.wav`（直接带上声音）；长片加 `--workers 4`，4 个浏览器并行渲染分段再拼接
 - 运动模糊：`--subframes 4`，渲染时间变成 4 倍。
 
 **Remotion**

@@ -23,7 +23,7 @@ code-videos/<slug>/
   audio/              // 合成的配乐、音效、配音
   qa/                 // 自检用的静帧和抽帧图
   out/draft.mp4       // 第 7 步自检用的低清版
-  out/final.mp4       // 成片
+  out/final-v<n>.mp4  // 成片，第 n 版；每版单独一个文件，旧版不覆盖
 ```
 
 所有命令都在 `code-videos/<slug>/` 里运行，其他相对路径都相对这个目录；命令里的 `scripts/` 指本 skill 目录下的 `scripts/`，运行时换成它的绝对路径。
@@ -97,7 +97,7 @@ code-videos/<slug>/
 
 每个预览做好后先自己检查：关键帧直接看图；小样用 `python3 scripts/analyze_video.py previews/plan-b.mp4 --out qa/plan-b` 出抽帧图再看。修正字溢出、元素挤在一起、画面太空等问题。
 
-做完预览后，填写每个方案的「预计耗时」：单帧耗时（取预览渲染的实测值：`render.py` 会打印每帧耗时，用框架时按渲染命令的总用时除以帧数）× 总帧数 × 子帧数（不加运动模糊时为 1）× 1.3。
+做完预览后，填写每个方案的「预计耗时」：单帧耗时（取预览渲染的实测值：`render.py` 会打印每帧耗时，用框架时按渲染命令的总用时除以帧数）× 总帧数 × 子帧数（不加运动模糊时为 1）× 1.3；正式渲染打算加 `--workers N` 时，再写上除以 N 后的时间。
 
 最后把三个方案连同预览文件路径一起呈现给用户，请用户选一个方案，或说明要怎样混合、修改。用户要求修改时，按要求改参数或方案，重做受影响方案的预览，再请用户确认，直到用户选定方案。
 
@@ -113,7 +113,7 @@ code-videos/<slug>/
 
 1. **每一帧只由它在视频时间轴上的时间点算出**。网页里 `window.render(t)` 画出第 t 秒，Remotion、HyperFrames 里画面由当前帧号或时间轴位置算出；不用 `requestAnimationFrame`、`setTimeout`、CSS transition，随机数带固定种子，帧和帧之间不保存状态。这样任何一帧都能单独重渲，改一个镜头不会影响别的镜头。
 2. **逐个镜头制作**。每做完一个镜头，渲染它开头、中间、结尾 3 张静帧（网页一条命令渲完：`python3 scripts/render.py index.html qa/shot<n>.png --still <开头>,<中间>,<结尾> --size <宽>x<高>`）并检查：文字有没有溢出、元素有没有重叠、主体够不够大；再对照代码里的进出场时间，确认每段文字至少停留 2.5 秒。修好再做下一个镜头。网页的尺寸和位置要按窗口宽高算（见 craft-rules.md 的「多画幅」），第 7 步按一半分辨率渲低清版时画面才不会错位。
-3. **声音和画面用同一张时间轴**。有配音时，先把 production-spec.md 各镜头的「旁白」按顺序连成全文，写进 `audio/voice-script.txt`，段落之间空一行（合成时每个空行插入 `--pause` 秒停顿，默认 0.6 秒，让观众在段落之间喘口气；某处要更长的停顿时，比如出题后留给观众思考，在那里单独写一段 `[pause <秒数>]`，合成时换成这么长的静音），运行 `python3 scripts/audio_tools.py tts audio/voice-script.txt audio/voice.wav --voice <音色> --rate=<语速>` 合成配音（语速如 `-8%`，要用等号连写，否则负值会被当成参数；默认用豆包语音，改用 edge-tts 时加 `--engine edge`，两者的音色和参数见 code-stack.md 的「声音层」），以它写出的 `audio/voice.json` 作为时间轴：每一句有开始、结束时间，句内每个词也有（`words`）；镜头切换对齐句子，句中的动作（比如读到某个数字时让数字落位）对齐对应的词（改用其他语音模型或用户提供的配音时，同样要拿到逐句和逐词时间戳，写成同样格式的 `audio/voice.json`）；没有配音时用节拍网格（用户提供的音乐用 `source/beats.json`，代码合成的配乐按 BPM 算）。有字幕时，运行 `python3 scripts/audio_tools.py subs audio/voice.json audio/subtitles.json` 拆出逐段字幕，按 craft-rules.md「画面」的「字幕」显示。镜头切换和关键动作落在时间轴上，音效放在画面动作发生的那一帧。
+3. **声音和画面用同一张时间轴**。有配音时，先把 production-spec.md 各镜头的「旁白」按顺序连成全文，写进 `audio/voice-script.txt`，段落之间空一行（合成时每个空行插入 `--pause` 秒停顿，默认 0.6 秒，让观众在段落之间喘口气；某处要更长的停顿时，比如出题后留给观众思考，在那里单独写一段 `[pause <秒数>]`，合成时换成这么长的静音；有开场淡入时，在开头写一段 `[pause <淡入秒数>]`，让配音从淡入结束时开始），运行 `python3 scripts/audio_tools.py tts audio/voice-script.txt audio/voice.wav --voice <音色> --rate=<语速>` 合成配音（语速如 `-8%`，要用等号连写，否则负值会被当成参数；默认用豆包语音，改用 edge-tts 时加 `--engine edge`，两者的音色和参数见 code-stack.md 的「声音层」），以它写出的 `audio/voice.json` 作为时间轴：每一句有开始、结束时间，句内每个词也有（`words`）；镜头切换对齐句子，句中的动作（比如读到某个数字时让数字落位）对齐对应的词（改用其他语音模型或用户提供的配音时，同样要拿到逐句和逐词时间戳，写成同样格式的 `audio/voice.json`）；没有配音时用节拍网格（用户提供的音乐用 `source/beats.json`，代码合成的配乐按 BPM 算）。有字幕时，运行 `python3 scripts/audio_tools.py subs audio/voice.json audio/subtitles.json` 拆出逐段字幕，按 craft-rules.md「画面」的「字幕」显示。镜头切换和关键动作落在时间轴上，音效放在画面动作发生的那一帧。
 4. **镜头要动**。用推、拉、跟随，让主体至少占画面三分之一。
 
 ## 第 7 步：渲染和验收
@@ -124,14 +124,14 @@ code-videos/<slug>/
    - 混音：运行 `python3 scripts/audio_tools.py mix audio/mix-raw.wav --music audio/music.wav --sfx audio/sfx.wav --voice audio/voice.wav`（没有的音轨省略对应参数），配音出现时它会自动压低配乐。
    - 标准化和检查：运行 `python3 scripts/audio_tools.py normalize audio/mix-raw.wav audio/mix.wav` 把响度调到 -14 LUFS，再运行 `python3 scripts/audio_tools.py check audio/mix.wav --out qa/audio`，看响度数值、波形图和频谱图。
 2. **低清版自检**：按一半分辨率、不加运动模糊渲整片 `out/draft.mp4`（网页：`python3 scripts/render.py index.html out/draft.mp4 --size <宽÷2>x<高÷2> --fps <帧率> --duration <时长> --audio audio/mix.wav --workers <N>`；框架见 code-stack.md 的「两种出片方式」）。运行 `python3 scripts/analyze_video.py out/draft.mp4 --out qa/draft` 出抽帧图，再运行 `python3 scripts/analyze_video.py out/draft.mp4 --out qa/phone --cells 15 --cell-width <手机宽度>` 出手机尺寸抽帧图（手机宽度按画幅取，见 craft-rules.md「自检打分」的「手机可读」），按 craft-rules.md 的「自检打分」打分，再按其中「怎么用分数」修改，直到每项 8 分及以上或做满 3 轮。字的清晰度和细线条在低清版里看不准，用正式分辨率的静帧检查（`render.py --still`）。
-3. **渲染整片**：自检通过后只渲一次正式版。网页运行 `python3 scripts/render.py index.html out/final.mp4 --size <宽>x<高> --fps <帧率> --duration <时长> --audio audio/mix.wav --workers <N>`，各参数取 production-spec.md 的「规格」，`<宽>x<高>` 用其中的像素尺寸；`--workers` 让 N 个浏览器并行渲染分段再无损拼接，N 取 CPU 核数的一半左右，30 秒以内的短片不用加。production-spec.md 的「运动模糊」写了子帧数时，加 `--subframes <子帧数>`，加之前告诉用户渲染时间会变成原来的 <子帧数> 倍。用框架时按 code-stack.md 的「两种出片方式」出画面、混入声音。
-4. **核对验收清单**：运行 `python3 scripts/analyze_video.py out/final.mp4 --out qa/final` 出抽帧图，对照 craft-rules.md 的「验收清单」逐项核对。有不符合的项时，找到原因修好：响度问题回到第 1 项重新混音和标准化，再用 FFmpeg 把新的 `audio/mix.wav` 换进成片（`-map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k`；码率低于 320k 时 AAC 编码会把真峰值推高 1–3 dB）；配音比视频长时，按 `audio/voice.json` 调整各镜头的时间，需要延长总时长时先请用户确认；其他问题回到对应镜头的代码修改。改动只影响一段时间时，只重渲这一段并换进成片：渲出和成片同尺寸、同帧率的片段（网页用 `render.py` 的 `--start` / `--duration`，框架见 code-stack.md），再运行 `python3 scripts/splice.py out/final.mp4 <片段1.mp4>@<起点秒数> <片段2.mp4>@<起点秒数> …`，同一轮的所有片段一次换进去；片段起点取整秒、时长取整秒（或一直到片尾）时，它不重新编码，几秒就换完。改动影响多个镜头（比如全片的字号、配色）时重渲整片。修好后重新出抽帧图，再从头核对整份清单，直到全部符合。事实类内容无法确认时不要猜改，单独列出来，第 8 步交付时请用户核对。
+3. **渲染整片**：自检通过后只渲一次正式版。网页运行 `python3 scripts/render.py index.html out/final-v<n>.mp4 --size <宽>x<高> --fps <帧率> --duration <时长> --audio audio/mix.wav --workers <N>`，各参数取 production-spec.md 的「规格」，`<宽>x<高>` 用其中的像素尺寸；`--workers` 让 N 个浏览器并行渲染分段再无损拼接，N 取 CPU 核数的一半左右，30 秒以内的短片不用加。production-spec.md 的「运动模糊」写了子帧数时，加 `--subframes <子帧数>`，加之前告诉用户渲染时间会变成原来的 <子帧数> 倍。用框架时按 code-stack.md 的「两种出片方式」出画面、混入声音。版本号 n：第一次出片为 1；交付后用户要求修改时，改完按新版本号出片（`out/` 里已有的最大版本号加 1），已交付的版本不覆盖、不删除。第 4 项的验收修改还在交付前，直接改当前这一版。
+4. **核对验收清单**：运行 `python3 scripts/analyze_video.py out/final-v<n>.mp4 --out qa/final-v<n>` 出抽帧图，对照 craft-rules.md 的「验收清单」逐项核对。有不符合的项时，找到原因修好：响度问题回到第 1 项重新混音和标准化，再用 FFmpeg 把新的 `audio/mix.wav` 换进成片（`-map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k`；码率低于 320k 时 AAC 编码会把真峰值推高 1–3 dB）；配音比视频长时，按 `audio/voice.json` 调整各镜头的时间，需要延长总时长时先请用户确认；其他问题回到对应镜头的代码修改。改动只影响一段时间时，只重渲这一段并换进成片：渲出和成片同尺寸、同帧率的片段（网页用 `render.py` 的 `--start` / `--duration`，框架见 code-stack.md），再运行 `python3 scripts/splice.py out/final-v<n>.mp4 <片段1.mp4>@<起点秒数> <片段2.mp4>@<起点秒数> …`，同一轮的所有片段一次换进去；片段起点取整秒、时长取整秒（或一直到片尾）时，它不重新编码，几秒就换完。改动影响多个镜头（比如全片的字号、配色）时重渲整片。修好后重新出抽帧图，再从头核对整份清单，直到全部符合。事实类内容无法确认时不要猜改，单独列出来，第 8 步交付时请用户核对。
 
 ## 第 8 步：交付
 
 把以下内容告诉用户，文件和目录都写完整路径：
 
-- 成片：`out/final.mp4`
+- 成片：`out/final-v<n>.mp4`（这一版的版本号；之前各版仍在 `out/` 里）
 - 制作规格：`production-spec.md`
 - 自检记录：`qa/review_log.md`
 - 工程目录：`code-videos/<slug>/`

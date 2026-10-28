@@ -161,6 +161,23 @@ def cmd_mix(a):
     if r.returncode:
         sys.exit(r.returncode)
     print(f"{a.out}: mixed {', '.join(k for k, _ in tracks)}")
+    if a.music and a.voice:
+        report_balance(a.music, a.voice, a.music_gain)
+
+
+def report_balance(music, voice, gain):
+    """Print how far the music sits below the voice in the voice's pauses, where ducking does not lower it."""
+    m, sr = load_mono(music); v, _ = load_mono(voice)
+    hop = sr // 10; n = len(m) // hop
+    v = np.pad(v, (0, max(0, n * hop - len(v))))[:n * hop]
+    db = lambda x: 20 * np.log10(np.sqrt(np.mean(x[:n * hop].reshape(n, hop) ** 2, axis=1)) + 1e-9)
+    mdb, vdb = db(m) + gain, db(v)
+    speaking, gaps = vdb > -40, (vdb <= -40) & (mdb > -60)
+    if not speaking.any() or not gaps.any():
+        return
+    voice_db, music_db = np.median(vdb[speaking]), np.median(mdb[gaps])
+    print(f"balance: voice {voice_db:.1f} dB, music in the voice's pauses {music_db:.1f} dB, "
+          f"{voice_db - music_db:.1f} dB below the voice (aim for 8-12; change --music-gain)")
 
 
 def group_sentences(text, words, para):

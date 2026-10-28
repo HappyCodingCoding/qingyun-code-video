@@ -94,7 +94,7 @@ document.fonts.ready.then(() => { window.render(0); window.ready = true; });
 - 用户给了音乐：按 SKILL.md 第 1 步测出的 `source/beats.json`，状态变化放在 beats 上，大的变化放在 downbeats 上，音效放在 hits 上。
 - 配乐：按项目用 numpy 写成 `audio/music.wav`，BPM 和时长按 production-spec.md；鼓（下扫频正弦 + 快衰减）、贝斯、和弦铺底、旋律分轨合成再混；纯正弦很单薄，和弦和旋律叠上泛音、加一点失谐和混响。
 - 配音：用 `python3 scripts/audio_tools.py tts` 合成，拿到逐句、逐词时间戳（`audio/voice.json`，词在每句的 `words` 里），再让画面去对旁白：镜头和段落对齐句子，句中的动作对齐词，不要按字数估算词的时间。它按段落（空行分隔）逐段合成，段与段之间插入停顿；一个段落放一个镜头或一个小节，不要一句一段，否则句间语调不连贯。
-- 混音：`python3 scripts/audio_tools.py mix` 把配乐、音效和配音混在一起，配音出现时自动压低配乐（压得不够或太多时调 `--duck-ratio`，整体音乐偏响时调 `--music-gain`）；最后运行 `python3 scripts/audio_tools.py normalize audio/mix-raw.wav audio/mix.wav`，它会把响度调到 -14 LUFS（误差 0.5 LU 以内），并把真峰值压到 -1 dBTP 以下。
+- 混音：`python3 scripts/audio_tools.py mix` 把配乐、音效和配音混在一起，配音出现时自动压低配乐（压得不够或太多时调 `--duck-ratio`）；有配乐和配音时它会打印一行 `balance`，给出配音停顿处配乐比配音低多少 dB，不在 8–12 dB 之间时调 `--music-gain` 重混；最后运行 `python3 scripts/audio_tools.py normalize audio/mix-raw.wav audio/mix.wav`，它会把响度调到 -14 LUFS（误差 0.5 LU 以内），并把真峰值压到 -1 dBTP 以下。
 - 检查：`python3 scripts/audio_tools.py check audio/mix.wav --out qa/audio` 出响度数值、波形图和频谱图。模型听不到声音，只能看图：看有没有削顶、有没有意外的静音段、低频有没有一直轰着。
 
 ## 自检打分
@@ -139,13 +139,13 @@ document.fonts.ready.then(() => { window.render(0); window.ready = true; });
 
 | 项 | 怎么确认 |
 |---|---|
-| 规格一致 | `qa/final-info.txt` 里的时长（误差不超过 1 帧）、像素尺寸和帧率与 production-spec.md 的「规格」一致，audio 为 yes |
+| 规格一致 | `qa/final-v<n>-info.txt` 里的时长（误差不超过 1 帧）、像素尺寸和帧率与 production-spec.md 的「规格」一致，audio 为 yes |
 | 没有空白帧 | 抽帧图和第 0 秒（有开场淡入时取淡入结束的时刻）的整帧里，没有只剩背景、内容没画出来的帧 |
-| 没有残留元素 | 运行 `python3 scripts/analyze_video.py out/final.mp4 --out qa/cuts --frames <各镜头的转场结束时间 + 0.1 秒>`，转场结束时间 = 镜头起点（取 production-spec.md 的 `<structure>`）+ 上一个镜头「转场」写的用时；导出的整帧里没有上一个镜头留下的元素。转场进行中上一个镜头的元素正在离开，不算残留 |
+| 没有残留元素 | 运行 `python3 scripts/analyze_video.py out/final-v<n>.mp4 --out qa/cuts --frames <各镜头的转场结束时间 + 0.1 秒>`，转场结束时间 = 镜头起点（取 production-spec.md 的 `<structure>`）+ 上一个镜头「转场」写的用时；导出的整帧里没有上一个镜头留下的元素。转场进行中上一个镜头的元素正在离开，不算残留 |
 | 文字在安全区内 | 抽帧图和手机尺寸抽帧图里，所有文字都在「画面」一节规定的安全区内，没有溢出、没有被遮挡 |
 | 字幕 | 不显示字幕时跳过；显示时，抽帧图里每一帧的字幕和那一刻的旁白一致，每段只占一行（有第二行时各一行），而且在安全区内 |
 | 样子一致 | 同一个角色或元素在每个镜头里样子一致 |
 | 没有禁止项 | 画面里没有出现 production-spec.md「禁止」里列出的做法 |
 | 事实准确 | 逐条对照 `source/notes.md` 记下的事实，检查画面文字和旁白；无法确认的列出来，第 8 步交给用户核对 |
 | 配音完整 | 没有配音时跳过；有配音时，`audio/voice.json` 最后一句的结束时间早于视频时长 |
-| 响度 | 运行 `python3 scripts/audio_tools.py check out/final.mp4 --out qa/final-audio`，查交付的成片本身：响度在 -14 ± 1 LUFS 以内，真峰值低于 -1 dBTP |
+| 响度 | 运行 `python3 scripts/audio_tools.py check out/final-v<n>.mp4 --out qa/final-v<n>-audio`，查交付的成片本身：响度在 -14 ± 1 LUFS 以内，真峰值低于 -1 dBTP |
