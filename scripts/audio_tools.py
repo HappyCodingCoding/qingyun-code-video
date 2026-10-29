@@ -94,6 +94,8 @@ def lowpass(sig, cutoff):
 SOUNDS = {
     "click": lambda: noise(0.04) * env(int(0.04 * SR), 0.0005, 0.005) * 0.6 + tone([2400], 0.04, 0.008) * 0.6,
     "tick": lambda: tone([3200], 0.03, 0.006),
+    "beep": lambda: tone([880], 0.14, 0.06),
+    "prompt": lambda: np.concatenate([tone([784], 0.13, 0.1), tone([1175], 0.4, 0.15)]),
     "pop": lambda: np.concatenate([tone([880], 0.06, 0.03), tone([1175, 1760], 0.4, 0.12)]),
     "success": lambda: np.concatenate([tone([1318.5], 0.09, 0.06), tone([1318.5, 1975.5], 0.5, 0.15)]),
     "whoosh": lambda: lowpass(noise(0.45, 7), 2500) * np.hanning(int(0.45 * SR)) * 2.2,
